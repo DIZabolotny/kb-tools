@@ -10,6 +10,8 @@ TYPE: note | decision | episode | skill | person | review
 Папка по умолчанию: note,decision → reference/; episode → journal/;
 skill → skills/; person → reference/hubs/; review → inbox/telegram/
 (разбор из канала Telegram, ждёт одобрения владельца).
+Время: created = YYYY-MM-DDTHH:MM, эпизод — journal/YYYY-MM-DD-HHMM-tema.md,
+в шаблоне доступны {{date}} и {{time}}. Часовой пояс — timezone из .kb.toml.
 Exit code: 0 — создано, 1 — ошибка.
 """
 import argparse, json, os, re, sys, unicodedata
@@ -62,10 +64,12 @@ def main():
     if not a.author:
         a.author = default_author(root)
 
-    date = K.today()
+    ts = K.now(root)
+    date, time_ = ts.strftime("%Y-%m-%d"), ts.strftime("%H:%M")
+    stamp = "%sT%s" % (date, time_)
     slug = slugify(a.title)
     rel_dir = a.dir or DEST[a.type]
-    fname = ("%s-%s.md" % (date, slug)) if a.type == "episode" else ("%s.md" % slug)
+    fname = ("%s-%s-%s.md" % (date, ts.strftime("%H%M"), slug)) if a.type == "episode" else ("%s.md" % slug)
     rel = os.path.join(rel_dir, fname).replace("\\", "/")
     ap = os.path.join(root, rel)
     i = 2
@@ -82,10 +86,11 @@ def main():
         body = "---\ncreated: {{date}}\nsource:\nauthor:\ntags: []\nstatus: active\n---\n# {{title}}\n"
     tags = "[%s]" % ", ".join(t.strip() for t in a.tags.split(",") if t.strip())
     body = (body.replace("{{date}}", date)
+                .replace("{{time}}", time_)
                 .replace("{{title}}", a.title)
                 .replace("{{Имя Фамилия}}", a.title))
     # заполняем поля шапки
-    body = re.sub(r"(?m)^created:.*$", "created: %s" % date, body, count=1)
+    body = re.sub(r"(?m)^created:.*$", "created: %s" % stamp, body, count=1)
     body = re.sub(r"(?m)^source:.*$", "source: %s" % a.source, body, count=1)
     body = re.sub(r"(?m)^author:.*$", "author: %s" % a.author, body, count=1)
     if a.tags:

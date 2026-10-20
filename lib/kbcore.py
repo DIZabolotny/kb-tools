@@ -11,7 +11,8 @@ import datetime
 REQUIRED_FIELDS = ["created", "source", "author", "tags", "status"]
 VALID_STATUS = {"active", "outdated", "archived"}
 VALID_BASIS = {"base", "web", "document", "capture", "model"}
-DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+# created: дата или дата и время (YYYY-MM-DDTHH:MM — формат «Дата и время» Obsidian)
+DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2})?)?$")
 MONTH_RE = re.compile(r"^\d{4}-\d{2}(-\d{2})?$")
 JOURNAL_NAME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9-]+\.md$")
 LATIN_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -204,3 +205,16 @@ def resolve_link(target, exact, lower, files=None):
 
 def today():
     return datetime.date.today().isoformat()
+
+
+def now(root=None):
+    """Текущее время в часовом поясе базы: timezone из .kb.toml > системный.
+    Нужен, чтобы заметки из GitHub Actions (там UTC) получали местное время."""
+    tzname = read_config(root).get("timezone") if root else None
+    if tzname:
+        try:
+            from zoneinfo import ZoneInfo
+            return datetime.datetime.now(ZoneInfo(tzname))
+        except Exception:
+            print("kbcore: неизвестный timezone %r в .kb.toml — беру системный" % tzname, file=sys.stderr)
+    return datetime.datetime.now().astimezone()

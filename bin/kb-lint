@@ -46,7 +46,7 @@ def lint(root, only_file=None):
             if f not in fm or fm[f] in ("", [], None):
                 errors.append((rel, "E2", "нет обязательного поля «%s»" % f))
         if "created" in fm and isinstance(fm["created"], str) and not K.DATE_RE.match(fm["created"]):
-            errors.append((rel, "E3", "created: ожидается YYYY-MM-DD, найдено %r" % fm["created"]))
+            errors.append((rel, "E3", "created: ожидается YYYY-MM-DD или YYYY-MM-DDTHH:MM, найдено %r" % fm["created"]))
         if "status" in fm and fm["status"] not in K.VALID_STATUS:
             errors.append((rel, "E4", "status %r ∉ %s" % (fm.get("status"), sorted(K.VALID_STATUS))))
         if "tags" in fm and not isinstance(fm["tags"], list):

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Тесты kb-tools: фикстурная база с заведомо битыми заметками.
 Запуск: python3 tests/run_tests.py  (exit 0 = все прошли)."""
-import os, shutil, subprocess, sys, tempfile, json
+import os, re, shutil, subprocess, sys, tempfile, json, datetime
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BIN = os.path.join(HERE, "..", "bin")
@@ -64,6 +64,12 @@ def main():
         # E3: дата
         open(os.path.join(d, "reference/bad3.md"), "w").write(
             "---\ncreated: 01.08.2026\nsource: t\nauthor: x\ntags: [a]\nstatus: active\n---\n[[hub-x]]\n")
+        # E3: дата и время через пробел вместо T
+        open(os.path.join(d, "reference/bad3b.md"), "w").write(
+            "---\ncreated: 2026-08-01 14:30\nsource: t\nauthor: x\ntags: [a]\nstatus: active\n---\n[[hub-x]]\n")
+        # дата и время через T — допустимо
+        open(os.path.join(d, "reference/datetime-ok.md"), "w").write(
+            "---\ncreated: 2026-08-01T14:30\nsource: t\nauthor: x\ntags: [a]\nstatus: active\n---\n[[hub-x]]\n")
         # E6: битая ссылка
         open(os.path.join(d, "reference/bad4.md"), "w").write(
             "---\ncreated: 2026-08-01\nsource: t\nauthor: x\ntags: [a]\nstatus: active\n---\n[[net-takogo]]\n")
@@ -89,6 +95,9 @@ def main():
               not any(e["file"].startswith("inbox/raw") for e in data["errors"]))
         for c in ["E1", "E2", "E3", "E4", "E6", "E7", "E8"]:
             check("ловит " + c, c in codes, str(sorted(codes)))
+        e3_files = {e["file"] for e in data["errors"] if e["code"] == "E3"}
+        check("E3: «дата время» через пробел — ошибка", "reference/bad3b.md" in e3_files, str(e3_files))
+        check("created с временем через T — не ошибка", "reference/datetime-ok.md" not in e3_files, str(e3_files))
         wcodes = {w["code"] for w in data["warnings"]}
         check("ловит W5 (basis: model в reference/)", "W5" in wcodes, str(sorted(wcodes)))
         # --file проверяет только один файл
@@ -106,6 +115,7 @@ def main():
         text = open(os.path.join(d, rel)).read()
         check("kb-new: author заполнен", "author: claude" in text)
         check("kb-new: tags заполнены", "tags: [test, server]" in text)
+        check("kb-new: created с временем", re.search(r"(?m)^created: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}$", text) is not None, text[:80])
         fm_ok = run([sys.executable, os.path.join(BIN, "kb-lint"), "--root", d,
                      "--file", os.path.join(d, rel), "--json"])
         errs = json.loads(fm_ok.stdout)["errors"]
@@ -131,10 +141,21 @@ def main():
         check("kb-new review -> inbox/telegram/", rel3 == "inbox/telegram/proekt-some-agent.md", rel3)
         txt3 = open(os.path.join(d, rel3)).read()
         check("kb-new review: stage из шаблона", "stage: review" in txt3)
-        # dry-run ничего не создаёт
+        # dry-run ничего не создаёт; эпизод — с временем в имени
         r = run([sys.executable, os.path.join(BIN, "kb-new"), "episode", "Проверка", "--dry-run", "--json"], env=env)
         would = json.loads(r.stdout)["would_create"]
         check("kb-new --dry-run не создаёт файл", not os.path.exists(os.path.join(d, would)), would)
+        check("эпизод: journal/YYYY-MM-DD-HHMM-tema.md",
+              re.match(r"^journal/\d{4}-\d{2}-\d{2}-\d{4}-proverka\.md$", would) is not None, would)
+        # часовой пояс из .kb.toml (UTC+14 — заметно отличается от системного)
+        from zoneinfo import ZoneInfo
+        open(os.path.join(d, ".kb.toml"), "w").write('author = "Owner Test"\ntimezone = "Pacific/Kiritimati"\n')
+        r = run([sys.executable, os.path.join(BIN, "kb-new"), "note", "Часовой пояс", "--json"], env=env)
+        txt6 = open(os.path.join(d, json.loads(r.stdout)["created"])).read()
+        t = datetime.datetime.now(ZoneInfo("Pacific/Kiritimati"))
+        ok = {(t + datetime.timedelta(minutes=m)).strftime("%Y-%m-%dT%H:%M") for m in (-1, 0, 1)}
+        got = re.search(r"(?m)^created: (\S+)$", txt6).group(1)
+        check("created в часовом поясе из .kb.toml", got in ok, "%s ∉ %s" % (got, sorted(ok)))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     print("\n%s: %d провалов" % ("FAIL" if FAILS else "PASS", len(FAILS)))
