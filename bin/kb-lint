@@ -1,0 +1,113 @@
+#!/usr/bin/env python3
+"""kb-lint — валидатор базы знаний. READ-ONLY по построению (инвариант слоя).
+
+Проверяет: YAML-шапки (обязательные поля, форматы, статусы), разрешимость
+wiki-ссылок, сирот, конвенции имён, просроченность valid_until.
+
+Использование:
+  kb-lint                 вся база (корень: --root > $KB_ROOT > поиск вверх)
+  kb-lint --file PATH     один файл
+  kb-lint --json          машиночитаемый вывод
+Exit code: 0 — ошибок нет (warnings допустимы), 1 — есть ошибки.
+"""
+import argparse, json, os, sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
+import kbcore as K
+
+
+def lint(root, only_file=None):
+    errors, warnings = [], []
+    notes = K.iter_notes(root)
+    exact, lower = K.build_stem_index(notes)
+    files = K.build_file_index(root)
+    incoming = set()
+    parsed = {}
+
+    for rel, ap in notes:
+        try:
+            text = open(ap, encoding="utf-8").read()
+        except Exception as e:
+            errors.append((rel, "E0", "не читается: %s" % e)); continue
+        fm, err = K.parse_frontmatter(text)
+        parsed[rel] = (fm, text)
+        for t in K.extract_wikilinks(text):
+            tl = t.split("/")[-1].lower()
+            incoming.add(tl)
+
+    for rel, ap in notes:
+        if only_file and os.path.normpath(rel) != only_file and os.path.normpath(ap) != only_file:
+            continue
+        fm, text = parsed.get(rel, (None, ""))
+        base = os.path.basename(rel)
+        if fm is None:
+            _, err = K.parse_frontmatter(text)
+            errors.append((rel, "E1", err or "шапка не разобрана")); continue
+        for f in K.REQUIRED_FIELDS:
+            if f not in fm or fm[f] in ("", [], None):
+                errors.append((rel, "E2", "нет обязательного поля «%s»" % f))
+        if "created" in fm and isinstance(fm["created"], str) and not K.DATE_RE.match(fm["created"]):
+            errors.append((rel, "E3", "created: ожидается YYYY-MM-DD, найдено %r" % fm["created"]))
+        if "status" in fm and fm["status"] not in K.VALID_STATUS:
+            errors.append((rel, "E4", "status %r ∉ %s" % (fm.get("status"), sorted(K.VALID_STATUS))))
+        if "tags" in fm and not isinstance(fm["tags"], list):
+            errors.append((rel, "E5", "tags: ожидается список [a, b]"))
+        if "valid_until" in fm and fm["valid_until"] and not K.MONTH_RE.match(str(fm["valid_until"])):
+            errors.append((rel, "E3", "valid_until: ожидается YYYY-MM[-DD]"))
+        if fm.get("basis") and fm["basis"] not in K.VALID_BASIS:
+            errors.append((rel, "E8", "basis %r ∉ %s" % (fm["basis"], sorted(K.VALID_BASIS))))
+        if fm.get("basis") == "model" and rel.startswith("reference/"):
+            warnings.append((rel, "W5", "basis: model в слое фактов — непроверенное знание, требует источника или пометки гэпа"))
+        for t in K.extract_wikilinks(text):
+            if not K.resolve_link(t, exact, lower, files):
+                errors.append((rel, "E6", "битая ссылка [[%s]]" % t))
+        if rel.startswith("journal/") and base != "_about.md" and not K.JOURNAL_NAME_RE.match(base):
+            errors.append((rel, "E7", "имя в journal/ должно быть YYYY-MM-DD-tema.md"))
+        if not K.LATIN_NAME_RE.match(base):
+            warnings.append((rel, "W2", "имя файла не латиницей — усложняет ссылки и CLI"))
+        # сироты и отсутствие исходящих ссылок — не для мета-файлов и archive/
+        if base not in K.META_FILES and not rel.startswith("archive/"):
+            stem = base[:-3].lower()
+            if stem not in incoming and not K.in_linted_subdir(rel):
+                warnings.append((rel, "W1", "сирота: ни одной входящей ссылки"))
+            if not K.extract_wikilinks(text):
+                warnings.append((rel, "W4", "нет ни одной исходящей [[ссылки]] — заметка не оформлена"))
+        if fm.get("valid_until"):
+            if str(fm["valid_until"])[:7] < K.today()[:7]:
+                warnings.append((rel, "W3", "просрочено (valid_until %s) — кандидат в archive/" % fm["valid_until"]))
+    return errors, warnings, len(notes)
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--file", help="проверить только этот файл")
+    p.add_argument("--root", help="корень базы (иначе $KB_ROOT или поиск вверх)")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--brief", action="store_true", help="одна строка итога")
+    a = p.parse_args()
+    root = os.path.abspath(a.root) if a.root else K.find_root(os.path.dirname(os.path.abspath(a.file)) if a.file else None)
+    if not root:
+        print("kb-lint: корень базы не найден (задайте KB_ROOT или --root)", file=sys.stderr)
+        sys.exit(2)
+    only = None
+    if a.file:
+        f = os.path.abspath(a.file)
+        only = os.path.normpath(os.path.relpath(f, root))
+    errors, warnings, n = lint(root, only)
+    if a.json:
+        print(json.dumps({"root": root, "checked": n,
+                          "errors": [{"file": f, "code": c, "msg": m} for f, c, m in errors],
+                          "warnings": [{"file": f, "code": c, "msg": m} for f, c, m in warnings]},
+                         ensure_ascii=False, indent=1))
+    elif a.brief:
+        print("kb-lint: %d файлов, %d ошибок, %d предупреждений" % (n, len(errors), len(warnings)))
+    else:
+        for f, c, m in errors:
+            print("ERROR  %s  %s  %s" % (c, f, m))
+        for f, c, m in warnings:
+            print("warn   %s  %s  %s" % (c, f, m))
+        print("— проверено файлов: %d; ошибок: %d; предупреждений: %d" % (n, len(errors), len(warnings)))
+    sys.exit(1 if errors else 0)
+
+
+if __name__ == "__main__":
+    main()
